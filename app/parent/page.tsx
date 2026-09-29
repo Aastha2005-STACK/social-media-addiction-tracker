@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import Navbar from "@/components/Navbar"
 import { calculateAddictionScore } from "@/lib/addiction-score"
-import { Profile, UsageLog, UserLimit, UserAlert } from "@/lib/types"
+import { Profile, UsageLog, UserLimit, UserAlert, UserRole } from "@/lib/types"
 
 interface LinkedChild {
   linkId: string
@@ -55,15 +55,15 @@ export default function ParentDashboard() {
           .eq("id", user.id)
           .single()
 
-        if (prof) {
-          setParentProfile(prof as Profile)
-        } else {
-          setParentProfile({
-            id: user.id,
-            email: user.email || "",
-            role: "parent",
-          })
+        // Strict Role Security: Only verified parent (or admin) can access /parent
+        if (!prof || (prof.role !== "parent" && prof.role !== "admin")) {
+          const actualRole = (prof?.role as UserRole) || "user"
+          const destination = actualRole === "counselor" ? "/counselor" : "/dashboard"
+          router.replace(destination)
+          return
         }
+
+        setParentProfile(prof as Profile)
 
         // Query parent_child_links
         const { data: links } = await supabase

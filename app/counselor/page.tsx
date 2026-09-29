@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import Navbar from "@/components/Navbar"
 import { calculateAddictionScore } from "@/lib/addiction-score"
-import { Profile, UsageLog, CounselorNote, AddictionScoreResult } from "@/lib/types"
+import { Profile, UsageLog, CounselorNote, AddictionScoreResult, UserRole } from "@/lib/types"
 
 interface AssignedClient {
   assignmentId: string
@@ -54,15 +54,15 @@ export default function CounselorDashboard() {
           .eq("id", user.id)
           .single()
 
-        if (prof) {
-          setCounselorProfile(prof as Profile)
-        } else {
-          setCounselorProfile({
-            id: user.id,
-            email: user.email || "",
-            role: "counselor",
-          })
+        // Strict Role Security: Only verified counselor (or admin) can access /counselor
+        if (!prof || (prof.role !== "counselor" && prof.role !== "admin")) {
+          const actualRole = (prof?.role as UserRole) || "user"
+          const destination = actualRole === "parent" ? "/parent" : "/dashboard"
+          router.replace(destination)
+          return
         }
+
+        setCounselorProfile(prof as Profile)
 
         // Query counselor_assignments
         const { data: assignments } = await supabase

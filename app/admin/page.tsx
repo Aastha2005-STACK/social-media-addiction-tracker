@@ -40,15 +40,20 @@ export default function AdminDashboard() {
           .eq("id", user.id)
           .single()
 
-        if (prof) {
-          setAdminProfile(prof as Profile)
-        } else {
-          setAdminProfile({
-            id: user.id,
-            email: user.email || "",
-            role: "admin",
-          })
+        // Strict Role Security: Only verified admin users can access /admin
+        if (!prof || prof.role !== "admin") {
+          const actualRole = (prof?.role as UserRole) || "user"
+          const destination =
+            actualRole === "parent"
+              ? "/parent"
+              : actualRole === "counselor"
+              ? "/counselor"
+              : "/dashboard"
+          router.replace(destination)
+          return
         }
+
+        setAdminProfile(prof as Profile)
 
         // Fetch all profiles
         const { data: allProfiles } = await supabase
