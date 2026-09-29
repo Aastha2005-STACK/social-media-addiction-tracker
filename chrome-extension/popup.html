@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SocialTrack Extension</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <div class="brand">
+      <span class="logo-icon">📱</span>
+      <div>
+        <div class="brand-title">SocialTrack</div>
+        <div class="brand-subtitle">Digital Wellness Tracker</div>
+      </div>
+    </div>
+    <div id="connectionPill" class="connection-pill disconnected">
+      <span id="connectionDot">○</span>
+      <span id="connectionText">Not Connected</span>
+    </div>
+  </div>
+
+  <!-- Live Status Card -->
+  <div class="status-card">
+    <div id="activeState" class="active-state paused">
+      <span id="pulseIndicator"></span>
+      <span id="activeStateText">Tracking Paused</span>
+    </div>
+    <div id="activeSite" class="active-site">No Supported Site</div>
+    <div id="sessionTimer" class="session-timer">00:00:00</div>
+    <div class="session-timer-label">Current Active Session</div>
+  </div>
+
+  <!-- Breakdown Section -->
+  <div class="section-title">
+    <span>Today's Tracked Usage</span>
+    <span id="todayTotalLabel">0h 00m</span>
+  </div>
+
+  <div class="usage-list">
+    <!-- YouTube -->
+    <div class="usage-item">
+      <div class="usage-row">
+        <div class="site-label">
+          <span>▶️</span> YouTube
+        </div>
+        <div id="timeYouTube" class="site-time">0m</div>
+      </div>
+      <div class="progress-bar-bg">
+        <div id="progressYouTube" class="progress-bar-fill youtube" style="width: 0%"></div>
+      </div>
+    </div>
+
+    <!-- Instagram -->
+    <div class="usage-item">
+      <div class="usage-row">
+        <div class="site-label">
+          <span>📸</span> Instagram
+        </div>
+        <div id="timeInstagram" class="site-time">0m</div>
+      </div>
+      <div class="progress-bar-bg">
+        <div id="progressInstagram" class="progress-bar-fill instagram" style="width: 0%"></div>
+      </div>
+    </div>
+
+    <!-- Reddit -->
+    <div class="usage-item">
+      <div class="usage-row">
+        <div class="site-label">
+          <span>🤖</span> Reddit
+        </div>
+        <div id="timeReddit" class="site-time">0m</div>
+      </div>
+      <div class="progress-bar-bg">
+        <div id="progressReddit" class="progress-bar-fill reddit" style="width: 0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Total Summary Card -->
+  <div class="total-card">
+    <div>
+      <div class="total-title">Total Active Usage</div>
+      <div id="accountEmail" style="font-size: 10px; color: #9ca3af; margin-top: 2px;">Guest Account</div>
+    </div>
+    <div id="totalUsageFormatted" class="total-val">0h 00m</div>
+  </div>
+
+  <!-- Action Buttons -->
+  <div class="btn-group">
+    <button id="btnOpenDashboard" class="btn btn-primary">
+      <span>📊</span> Open Dashboard
+    </button>
+    <button id="btnSyncNow" class="btn btn-secondary">
+      <span>🔄</span> Sync Now
+    </button>
+  </div>
+
+  <!-- Privacy Policy Statement -->
+  <div class="privacy-notice">
+    <strong>Privacy First:</strong> SocialTrack tracks active time only on supported websites (YouTube, Instagram, Reddit). It does not collect passwords, private messages, page content, or personal files.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

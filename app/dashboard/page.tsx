@@ -7,6 +7,7 @@ import Navbar from "@/components/Navbar"
 import AddScreenTimeModal from "@/components/AddScreenTimeModal"
 import SetGoalModal from "@/components/SetGoalModal"
 import ReportsModal from "@/components/ReportsModal"
+import ConnectExtensionModal from "@/components/ConnectExtensionModal"
 import { calculateAddictionScore } from "@/lib/addiction-score"
 import { Profile, UsageLog, UserLimit, AddictionScoreResult } from "@/lib/types"
 
@@ -19,15 +20,19 @@ export default function DashboardPage() {
   const [userLimits, setUserLimits] = useState<UserLimit | null>(null)
   const [logs, setLogs] = useState<UsageLog[]>([])
 
+  // Extension status
+  const [isExtensionConnected, setIsExtensionConnected] = useState(false)
+  const [isConnectModalOpen, setIsConnectModalOpen] = useState(false)
+
   // Modals state
   const [isAddOpen, setIsAddOpen] = useState(false)
   const [isGoalOpen, setIsGoalOpen] = useState(false)
   const [isReportsOpen, setIsReportsOpen] = useState(false)
   const [aiAnalysisCustom, setAiAnalysisCustom] = useState<string | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
 
   const fetchData = useCallback(async () => {
     try {
-      // Timeout guard for Supabase data fetching
       const fetchPromise = (async () => {
         const {
           data: { user },
@@ -98,6 +103,59 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchData()
+
+    // 1. Real-time updates: Subscribe to Postgres changes on usage_logs
+    const channel = supabase
+      .channel("realtime_dashboard_logs")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "usage_logs",
+        },
+        () => {
+          fetchData()
+        }
+      )
+      .subscribe()
+
+    // 2. Fallback polling every 15 seconds
+    const interval = setInterval(fetchData, 15000)
+
+    // 3. Chrome Extension handshake & auto-sync
+    const handleExtensionMessage = (event: MessageEvent) => {
+      if (event.data?.type === "SOCIALTRACK_EXTENSION_PONG") {
+        setIsExtensionConnected(true)
+      }
+    }
+    window.addEventListener("message", handleExtensionMessage)
+
+    // Ping extension and broadcast session
+    window.postMessage({ type: "SOCIALTRACK_EXTENSION_PING" }, "*")
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        window.postMessage(
+          {
+            type: "SOCIALTRACK_REQUEST_EXTENSION_SYNC",
+            session: {
+              user_id: session.user.id,
+              email: session.user.email,
+              access_token: session.access_token,
+              refresh_token: session.refresh_token,
+            },
+          },
+          "*"
+        )
+      }
+    })
+
+    return () => {
+      supabase.removeChannel(channel)
+      clearInterval(interval)
+      window.removeEventListener("message", handleExtensionMessage)
+    }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Computed Metrics
@@ -105,11 +163,12 @@ export default function DashboardPage() {
   const todayLogs = logs.filter((l) => l.log_date === todayStr)
   const todayMinutes = todayLogs.reduce((acc, curr) => acc + curr.duration_minutes, 0)
 
-  // Most used platform today
+  // Platform breakdowns
   const platformUsageMap: Record<string, number> = {}
   todayLogs.forEach((l) => {
     platformUsageMap[l.platform] = (platformUsageMap[l.platform] || 0) + l.duration_minutes
   })
+
   let mostUsedApp = "None"
   let mostUsedMinutes = 0
   Object.entries(platformUsageMap).forEach(([app, mins]) => {
@@ -118,6 +177,15 @@ export default function DashboardPage() {
       mostUsedMinutes = mins
     }
   })
+
+  // Specific Chrome Extension tracked platform minutes
+  const youtubeMins = platformUsageMap["YouTube"] || 0
+  const instagramMins = platformUsageMap["Instagram"] || 0
+  const redditMins = platformUsageMap["Reddit"] || 0
+  const extensionTrackedMinutes = youtubeMins + instagramMins + redditMins
+
+  // Auto-detect extension activity if extension tracked minutes exist
+  const hasExtensionActivity = extensionTrackedMinutes > 0 || isExtensionConnected
 
   // Daily limit calculations
   const dailyLimit = userLimits?.daily_limit_minutes || 180
@@ -152,23 +220,30 @@ export default function DashboardPage() {
   // Addiction Score calculation
   const scoreResult: AddictionScoreResult = calculateAddictionScore(todayMinutes, dailyLimit, logs)
 
-  const handleTriggerAI = () => {
-    if (todayMinutes === 0) {
-      setAiAnalysisCustom(
-        "No screen time logged today yet. Keep up the mindfulness! Remember to take 10-minute eye breaks whenever you start scrolling."
-      )
-    } else if (isOverLimit) {
-      setAiAnalysisCustom(
-        `Alert: You've surpassed your daily goal by ${todayMinutes - dailyLimit} minutes, primarily on ${mostUsedApp}. Consider activating grayscale mode and moving your device away from your bedside.`
-      )
-    } else if (todayMinutes > dailyLimit * 0.75) {
-      setAiAnalysisCustom(
-        `You have used 75%+ of your boundary. We recommend switching to offline reading or hydration breaks for the remaining day.`
-      )
-    } else {
-      setAiAnalysisCustom(
-        `Great pacing today! You are maintaining a healthy ratio with ${minutesRemaining}m safely remaining in your allowance.`
-      )
+  const handleTriggerAI = async () => {
+    setAiLoading(true)
+    try {
+      const res = await fetch("/api/ai-insights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          todayMinutes,
+          dailyLimit,
+          platformBreakdown: platformUsageMap,
+          addictionScore: scoreResult.score,
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.insight) {
+          setAiAnalysisCustom(data.insight)
+        }
+      }
+    } catch {
+      // fallback
+      setAiAnalysisCustom(scoreResult.feedback)
+    } finally {
+      setAiLoading(false)
     }
   }
 
@@ -197,16 +272,72 @@ export default function DashboardPage() {
                 Your Digital Wellness Dashboard
               </h2>
               <p className="mt-2 text-slate-400 text-sm max-w-2xl">
-                Monitor your social media habits, avoid doomscrolling, and build healthier screen-time routines.
+                Monitor your active social media habits, avoid doomscrolling, and build healthier screen-time routines.
               </p>
             </div>
 
             <div className="flex items-center gap-3">
               <button
+                onClick={() => setIsConnectModalOpen(true)}
+                className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 px-4 py-2.5 text-xs sm:text-sm font-medium text-purple-300 transition"
+              >
+                <span>🧩</span> Chrome Extension
+              </button>
+              <button
                 onClick={() => setIsAddOpen(true)}
-                className="flex items-center gap-2 rounded-xl bg-purple-500 hover:bg-purple-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-purple-500/20 transition"
+                className="flex items-center gap-2 rounded-xl bg-purple-500 hover:bg-purple-600 px-4 py-2.5 text-xs sm:text-sm font-semibold text-white shadow-lg shadow-purple-500/20 transition"
               >
                 <span>+</span> Add Screen Time
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Chrome Extension Status Banner */}
+        <div className="mb-8 rounded-2xl border border-purple-500/20 bg-gradient-to-r from-purple-950/40 via-indigo-950/30 to-slate-900/40 p-5 backdrop-blur-xl">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/20 text-xl border border-purple-500/30">
+                🧩
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="font-bold text-white text-sm">Chrome Extension Tracking</h4>
+                  <span
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${
+                      hasExtensionActivity
+                        ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                        : "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                    }`}
+                  >
+                    <span>{hasExtensionActivity ? "●" : "○"}</span>
+                    {hasExtensionActivity ? "Connected & Active" : "Pairing Ready"}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Supported Websites: <strong className="text-slate-300 font-medium">YouTube • Instagram • Reddit</strong>
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4 text-xs">
+              <div className="bg-slate-900/60 px-3.5 py-2 rounded-xl border border-white/10">
+                <span className="text-slate-400 block text-[10px] uppercase font-semibold">Today&apos;s Tracked Time</span>
+                <span className="font-bold text-white text-sm">
+                  {Math.floor(extensionTrackedMinutes / 60)}h {extensionTrackedMinutes % 60}m
+                </span>
+              </div>
+
+              <div className="bg-slate-900/60 px-3.5 py-2 rounded-xl border border-white/10">
+                <span className="text-slate-400 block text-[10px] uppercase font-semibold">Most Used</span>
+                <span className="font-bold text-purple-300 text-sm">{mostUsedApp}</span>
+              </div>
+
+              <button
+                onClick={() => setIsConnectModalOpen(true)}
+                className="rounded-xl bg-purple-500 hover:bg-purple-600 px-4 py-2 font-medium text-white shadow-md shadow-purple-500/20 transition whitespace-nowrap"
+              >
+                {hasExtensionActivity ? "Extension Settings" : "Connect Extension"}
               </button>
             </div>
           </div>
@@ -223,14 +354,14 @@ export default function DashboardPage() {
               {Math.floor(todayMinutes / 60)}h {todayMinutes % 60}m
             </h3>
             <p className="mt-2 text-xs text-slate-400">
-              {todayLogs.length} active {todayLogs.length === 1 ? "session" : "sessions"} logged today
+              {todayLogs.length} active {todayLogs.length === 1 ? "session" : "sessions"} recorded
             </p>
           </div>
 
           {/* 2. Most Used App */}
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl hover:border-purple-500/30 transition">
             <p className="text-xs uppercase font-semibold tracking-wider text-slate-400">
-              Most Used App
+              Most Used Website
             </p>
             <h3 className="mt-3 text-3xl font-bold text-white truncate">
               {mostUsedApp}
@@ -250,7 +381,7 @@ export default function DashboardPage() {
               </p>
               <button
                 onClick={() => setIsGoalOpen(true)}
-                className="text-xs text-purple-400 hover:text-purple-300"
+                className="text-xs text-purple-400 hover:text-purple-300 font-medium"
               >
                 Edit
               </button>
@@ -288,6 +419,48 @@ export default function DashboardPage() {
           </div>
         </div>
 
+        {/* Website Breakdown Cards */}
+        <div className="mt-6 grid gap-4 grid-cols-1 md:grid-cols-3">
+          <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">▶️</span>
+              <div>
+                <h5 className="font-semibold text-sm text-white">YouTube</h5>
+                <p className="text-xs text-slate-400">Video &amp; Shorts</p>
+              </div>
+            </div>
+            <span className="text-base font-bold text-red-400">
+              {Math.floor(youtubeMins / 60)}h {youtubeMins % 60}m
+            </span>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">📸</span>
+              <div>
+                <h5 className="font-semibold text-sm text-white">Instagram</h5>
+                <p className="text-xs text-slate-400">Reels &amp; Feed</p>
+              </div>
+            </div>
+            <span className="text-base font-bold text-pink-400">
+              {Math.floor(instagramMins / 60)}h {instagramMins % 60}m
+            </span>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">🤖</span>
+              <div>
+                <h5 className="font-semibold text-sm text-white">Reddit</h5>
+                <p className="text-xs text-slate-400">Communities</p>
+              </div>
+            </div>
+            <span className="text-base font-bold text-orange-400">
+              {Math.floor(redditMins / 60)}h {redditMins % 60}m
+            </span>
+          </div>
+        </div>
+
         {/* Charts & AI Insight Section */}
         <div className="mt-8 grid gap-6 grid-cols-1 lg:grid-cols-3">
           {/* Weekly Screen Time Chart */}
@@ -296,7 +469,7 @@ export default function DashboardPage() {
               <div>
                 <h3 className="text-xl font-semibold">Weekly Screen Time</h3>
                 <p className="mt-1 text-sm text-slate-400">
-                  Your daily digital usage over the last 7 days
+                  Aggregate extension and manual usage during the last 7 days
                 </p>
               </div>
 
@@ -322,7 +495,6 @@ export default function DashboardPage() {
                     key={d.date}
                     className="flex h-full flex-col items-center justify-end gap-2 group relative"
                   >
-                    {/* Tooltip on hover */}
                     <div className="opacity-0 group-hover:opacity-100 transition absolute -top-8 bg-slate-800 text-xs px-2 py-1 rounded shadow-lg border border-white/10 whitespace-nowrap z-10 pointer-events-none">
                       {Math.floor(d.minutes / 60)}h {d.minutes % 60}m
                     </div>
@@ -355,8 +527,8 @@ export default function DashboardPage() {
               <div className="flex items-center gap-2">
                 <span className="text-3xl">🤖</span>
                 <div>
-                  <h3 className="text-lg font-bold text-white">AI Wellness Insight</h3>
-                  <p className="text-xs text-purple-300">Habit & behavioral analysis</p>
+                  <h3 className="text-lg font-bold text-white">Gemini AI Wellness Insight</h3>
+                  <p className="text-xs text-purple-300">Habit &amp; behavioral analysis</p>
                 </div>
               </div>
 
@@ -382,9 +554,10 @@ export default function DashboardPage() {
 
             <button
               onClick={handleTriggerAI}
-              className="mt-6 w-full rounded-xl bg-purple-500 hover:bg-purple-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-purple-500/25 transition"
+              disabled={aiLoading}
+              className="mt-6 w-full rounded-xl bg-purple-500 hover:bg-purple-600 disabled:opacity-50 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-purple-500/25 transition"
             >
-              Refresh AI Analysis
+              {aiLoading ? "Consulting Gemini AI..." : "Refresh AI Analysis"}
             </button>
           </div>
         </div>
@@ -439,6 +612,12 @@ export default function DashboardPage() {
       {/* Modals */}
       {profile && (
         <>
+          <ConnectExtensionModal
+            isOpen={isConnectModalOpen}
+            onClose={() => setIsConnectModalOpen(false)}
+            isConnected={hasExtensionActivity}
+            userEmail={profile.email}
+          />
           <AddScreenTimeModal
             isOpen={isAddOpen}
             onClose={() => setIsAddOpen(false)}

@@ -86,25 +86,61 @@ CREATE TABLE IF NOT EXISTS public.alerts (
 -- ==============================================================================
 
 CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  user_email TEXT;
+  user_full_name TEXT;
+  assigned_role TEXT;
 BEGIN
-  INSERT INTO public.profiles (id, email, full_name, role)
+  user_email := COALESCE(NEW.email, '');
+
+  user_full_name := COALESCE(
+    NEW.raw_user_meta_data->>'full_name',
+    split_part(user_email, '@', 1),
+    'User'
+  );
+
+  assigned_role := COALESCE(NEW.raw_user_meta_data->>'role', 'user');
+  IF assigned_role NOT IN ('user', 'parent', 'counselor', 'admin') THEN
+    assigned_role := 'user';
+  END IF;
+
+  INSERT INTO public.profiles (id, email, full_name, role, created_at, updated_at)
   VALUES (
     NEW.id,
-    NEW.email,
-    COALESCE(NEW.raw_user_meta_data->>'full_name', split_part(NEW.email, '@', 1)),
-    COALESCE(NEW.raw_user_meta_data->>'role', 'user')
+    user_email,
+    user_full_name,
+    assigned_role,
+    NOW(),
+    NOW()
   )
-  ON CONFLICT (id) DO NOTHING;
+  ON CONFLICT (id) DO UPDATE
+  SET
+    email = CASE
+      WHEN public.profiles.email IS NULL OR public.profiles.email = '' THEN EXCLUDED.email
+      ELSE public.profiles.email
+    END,
+    full_name = COALESCE(public.profiles.full_name, EXCLUDED.full_name),
+    updated_at = NOW();
 
-  -- Also initialize default limits for the user
-  INSERT INTO public.user_limits (user_id, daily_limit_minutes)
-  VALUES (NEW.id, 180)
-  ON CONFLICT (user_id) DO NOTHING;
+  BEGIN
+    INSERT INTO public.user_limits (user_id, daily_limit_minutes, weekend_limit_minutes, warning_threshold_percent, updated_at)
+    VALUES (NEW.id, 180, 240, 80, NOW())
+    ON CONFLICT (user_id) DO NOTHING;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'user_limits initialization skipped: %', SQLERRM;
+  END;
 
   RETURN NEW;
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'handle_new_user error: %', SQLERRM;
+  RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
 
 -- Drop existing trigger if it exists then create fresh
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;

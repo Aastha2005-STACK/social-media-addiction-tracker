@@ -39,7 +39,13 @@ export default function LoginPage() {
 
         if (signUpError) {
           setMessageType("error")
-          setMessage(signUpError.message)
+          if (signUpError.message?.toLowerCase().includes("database error saving new user")) {
+            setMessage(
+              "Supabase Database Error: Database trigger failed. Please execute supabase_migration_profiles_email.sql in your Supabase SQL Editor to update handle_new_user() and add the profiles.email column."
+            )
+          } else {
+            setMessage(signUpError.message)
+          }
           return
         }
 
